@@ -300,8 +300,8 @@ EOFPASSPHRASEEOF
     set -e
     # Add new bootloader entry:
     DEVICE="$(df -T /boot/efi | sed -n 2p | awk '{ print $1}')"
-    DISK="$(echo "$DEVICE" | sed 's|[0-9]||g')"
-    PARTNUM="$(echo "$DEVICE" | sed 's|[^0-9]||g')"
+    DISK="$(echo "$DEVICE" | sed -re 's/(p|)[0-9]$//g')"
+    PARTNUM="$(echo "$DEVICE" | tail -c 2|sed 's|[^0-9]||g')"
     efibootmgr --quiet --create --disk "$DISK" --part "$PARTNUM" \
         --write-signature --label "$BOOTLOADER_ID" \
         --loader "\\EFI\\$BOOTLOADER_ID\\$EFI_FILENAME"

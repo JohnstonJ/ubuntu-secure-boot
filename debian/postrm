@@ -38,7 +38,7 @@ fi
 case "$1" in
     purge)
         # Clean up files made by this package.
-        rm -rf /etc/ubuntu-secure-boot/keys
+        #rm -rf /etc/ubuntu-secure-boot/keys
         rm -f /etc/ubuntu-secure-boot/grub.cfg
         rm -f /etc/grub.d/01_grub_secure_boot_password
         # Avoid wiping original post*.distrib scripts if they were still there:

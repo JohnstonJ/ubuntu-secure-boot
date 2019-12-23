@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Here we override the original grub-install with a custom version that does a
 # secure installation of GRUB.  For now, we don't support any of the original
@@ -20,10 +20,20 @@
 # signature files, let GRUB go to a rescue prompt, and then turn off
 # check_signatures.
 
-set -e
 
 # Load debconf: used for prompting for passphrase.
 . /usr/share/debconf/confmodule
+
+KEYDIR=/etc/ubuntu-secure-boot/keys
+export GNUPGHOME="$KEYDIR"
+#tty=$(tty)
+#if [ $? -eq 0 ]
+#then
+#    export GPG_TTY=$(tty)
+#    gpg-connect-agent updatestartuptty /bye >/dev/null 2>&1
+#fi
+
+set -e
 
 runsbsign() {
     # On Ubuntu 16.04, sbsign crashes randomly; this appears to be a
@@ -52,51 +62,81 @@ EFI_FILENAME=securegrubx64.efi   # EFI image name
 BOOTLOADER_ID=ubuntu             # EFI directory on EFI partition
 FORMAT=x86_64-efi                # grub --format
 
-KEYDIR=/etc/ubuntu-secure-boot/keys
-export GNUPGHOME="$KEYDIR"
 
 # Temporary file cleanup
 Cleanup () {
-    if [ -n "$GPGPUBLICKEY" ] ; then
-        rm -f "$GPGPUBLICKEY"
-    fi
-    if [ -n "$GRUBSTAGE" ] ; then
-        rm -rf "$GRUBSTAGE"
-    fi
-    if [ -n "$PASSPHRASEFILE" ] ; then
-        rm -f "$PASSPHRASEFILE"
-    fi
-    if [ -n "$PEMPRIVATEKEY" ] ; then
-        rm -f "$PEMPRIVATEKEY"
-    fi
+    [ -n "$GPGPUBLICKEY" ] && rm -f "$GPGPUBLICKEY" ]
+    [ -n "$GRUBSTAGE" ] && rm -rf "$GRUBSTAGE"
+    [ -n "$PEMPRIVATEKEY" ] && rm -f "$PEMPRIVATEKEY"
+    [ -n "$NULL" ] && rm -f "$NULL"
 }
 
-# Obtain passphrase from user:
-GetPassphrase() {
-    # Ask user for passphrase: note that we die if return code is 30,
-    # indicating that the user won't be asked the question:
-    db_settitle ubuntu-secure-boot/title
-    db_reset ubuntu-secure-boot/passphrase
-    db_fset ubuntu-secure-boot/passphrase seen false
-    db_input critical ubuntu-secure-boot/passphrase
-    db_go
-    db_get ubuntu-secure-boot/passphrase
-    PASSPHRASE="$RET"
-    # Always reset the password so that it doesn't remain behind:
-    db_reset ubuntu-secure-boot/passphrase
+GetPassphrase() {	
+    # Ask user for passphrase: note that we die if return code is 30,	
+    # indicating that the user won't be asked the question:	
+    db_settitle ubuntu-secure-boot/title	
+    db_reset ubuntu-secure-boot/passphrase	
+    db_fset ubuntu-secure-boot/passphrase seen false	
+    db_input critical ubuntu-secure-boot/passphrase	
+    db_go	
+    db_get ubuntu-secure-boot/passphrase	
+    PASSPHRASE="$RET"	
+    # Always reset the password so that it doesn't remain behind:	
+    db_reset ubuntu-secure-boot/passphrase	
+}	
+	
+# Ask if the user wants to retry entering passphrase:	
+RetryPassphrase() {	
+    db_settitle ubuntu-secure-boot/title	
+    db_reset ubuntu-secure-boot/retrypassphrase	
+    db_fset ubuntu-secure-boot/retrypassphrase seen false	
+    db_input critical ubuntu-secure-boot/retrypassphrase	
+    db_go	
+    db_get ubuntu-secure-boot/retrypassphrase	
+    if [ "$RET" != true ] ; then	
+        exit 1	
+    fi	
 }
 
-# Ask if the user wants to retry entering passphrase:
-RetryPassphrase() {
-    db_settitle ubuntu-secure-boot/title
-    db_reset ubuntu-secure-boot/retrypassphrase
-    db_fset ubuntu-secure-boot/retrypassphrase seen false
-    db_input critical ubuntu-secure-boot/retrypassphrase
-    db_go
-    db_get ubuntu-secure-boot/retrypassphrase
-    if [ "$RET" != true ] ; then
-        exit 1
+# Cache: if the result will be the same return 0, else 1
+# this prevents rebuilding grub modules many times (once
+# per kernel installed)
+CheckCache() {
+    ## is /etc/ubuntu-secure-boot/grub.cfg unchanged?
+    ## is GPGPUBLICKEY unchanged?
+    if [ ! -d /etc/ubuntu-secure-boot/cache ]
+    then
+        echo "grub-install cache: first run, rebuild"
+        mkdir -p /etc/ubuntu-secure-boot/cache
+        return 1
     fi
+    if [ ! -f /etc/ubuntu-secure-boot/cache/grub.cfg ]
+    then
+        echo "grub-install cache: no previous grub.cfg, rebuild"
+        return 1
+    fi
+    if [ ! -f /etc/ubuntu-secure-boot/cache/grub.pubkey ]
+    then
+        echo "grub-install cache: no previous grub.pubkey, rebuild"
+        return 1
+    fi
+    cmp "$GPGPUBLICKEY" /etc/ubuntu-secure-boot/cache/grub.pubkey
+    if [ $? != 0 ]
+    then
+        echo "grub install cache: GPG key changed, rebuild"
+        return 1
+    fi
+    if [ -f /etc/ubuntu-secure-boot/grub.cfg ]
+    then
+        cmp /etc/ubuntu-secure-boot/grub.cfg /etc/ubuntu-secure-boot/cache/grub.cfg
+        if [ $? != 0 ]
+        then
+            echo "grub install cache: change in grub.cfg, rebuild"
+            return 1
+        fi
+    fi
+    echo "grub install cache: no changes found, do not rebuld"
+    return 0
 }
 
 # Does key directory exist?
@@ -107,29 +147,63 @@ then
     # Temporary files:
     GPGPUBLICKEY="$(mktemp)"
     GRUBSTAGE="$(mktemp -d)"
-    PASSPHRASEFILE="$(mktemp)"
     PEMPRIVATEKEY="$(mktemp)"
+    NULL="$(mktemp)"
     trap Cleanup EXIT INT TERM
 
-    # Extract public key:
-    KEYID=$(gpg -k --with-colons | grep "Ubuntu secure boot EFI key" \
-        | cut -d : -f 5)
-    gpg --batch --yes --output "$GPGPUBLICKEY" --export "$KEYID"
+    # See https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=838153
+    # KEYID is not in output. So instead, export and grep it
+    KEYID=$(gpg -a --export |gpg --list-packets --verbose | \
+      awk '/Ubuntu secure boot EFI key/ { printing=1 } /keyid/ { if (printing) { print $NF; printing=0} } {}')
 
-    # Get passphrase:
+    gpg --yes --output "$GPGPUBLICKEY" --export "$KEYID"
+    set +e
+
+    CheckCache "$GPGPUBLICKEY"
+    if [ $? -eq 0 ]
+    then
+        exit 0
+    fi
+
     PASSPHRASEOK=0
-    while [ "$PASSPHRASEOK" -eq 0 ] ; do
-        GetPassphrase
-        # Test signing to make sure passphrase is ok
-        echo "$PASSPHRASE" > "$PASSPHRASEFILE"
-        if ! : | gpg --batch -u "$KEYID" --passphrase-file "$PASSPHRASEFILE" \
-            -o /dev/null -as -
+    until [ $PASSPHRASEOK -eq 1 ]
+    do
+        : | gpg --pinentry-mode cancel --yes -u "$KEYID" -o "$NULL" -as - 2>/dev/null
+        if [ $? -eq 0 ]
         then
-            RetryPassphrase
-        else
             PASSPHRASEOK=1
+        else
+            echo "get the passphrase"
+            GetPassphrase
+            echo "$PASSPHRASE" | gpg --batch --passphrase-fd 0 \
+                                      --pinentry-mode loopback --yes \
+                                      -u "$KEYID" -o "$NULL" -as /dev/null 2>/dev/null
+            if [ $? -eq 0 ]
+            then
+                PASSPHRASEOK=1
+            else
+                RetryPassphrase
+            fi
         fi
     done
+    if [ $PASSPHRASEOK != 1 ]
+    then
+        echo "^C pressed, giving up"
+        exit 1
+    fi
+
+    set -e
+#    # Test signing to make sure passphrase is ok, also to
+#    # fetch it into the gpg-agent cache
+#    # We use a file for the output rather than /dev/null
+#    # since it does a chmod 644 after its done!
+#    until : | gpg --pinentry-mode ask --yes -u "$KEYID" -o "$NULL" -as -
+#    do
+#        rm -f "$NULL"
+#	echo "Incorrect passphrase, retry"
+#        sleep 1
+#    done
+    rm -f "$NULL"
 
     # We have to sign all GRUB files (e.g. modules) with gpg.  Currently,
     # grub-mkstandalone - while otherwise being the ideal tool to use
@@ -155,8 +229,7 @@ then
     # Sign GRUB files
     echo "Signing GRUB modules... (this will take a minute)"
     find "$GRUBSTAGE"/boot -type f -print0 | xargs -0 -n 1 \
-        gpg --batch -u "$KEYID" --detach-sign \
-        --passphrase-file "$PASSPHRASEFILE"
+        gpg -v --yes -u "$KEYID" --detach-sign
 
     # Make memdisk/tar image:
     echo "Creating memdisk..."
@@ -178,6 +251,8 @@ then
         verify
         gcry_rsa
         gcry_dsa
+        gcry_sha256
+        gcry_sha512
         "
     # The upstream Debian version of GRUB2 applies a special patch called
     # debian/patches/no_insmod_on_sb.patch:
@@ -212,6 +287,7 @@ then
         cat
         chain
         configfile
+        cryptodisk
         echo
         efifwsetup
         efinet
@@ -234,6 +310,7 @@ then
         lsefimmap
         lsefisystab
         lssal
+        luks
         memdisk
         minicmd
         normal
@@ -271,7 +348,7 @@ then
     # If the user is running an older version of Ubuntu/GRUB2, they might not
     # have all the modules listed above.  Filter out the ones they don't have.
     WANTED_FILE=$(mktemp)
-    echo $GRUB_MODULES | tr ' ' '\0' | tr -d '\n' | sort -z > "$WANTED_FILE"
+    echo $GRUB_MODULES | tr ' ' '\0' | tr -d '\n' | sort -u -z > "$WANTED_FILE"
     ACTUAL_FILE=$(mktemp)
     find "$GRUBSTAGE/boot/grub" -type f -name \*.mod -printf '%f\0' | \
         sed -z 's/\.mod//g' | sort -z > "$ACTUAL_FILE"
@@ -281,10 +358,11 @@ then
         $USED_MODULES
 
     # Save db.key OpenSSL key to an unencrypted file (remove passphrase):
-    openssl rsa -in "$KEYDIR/db.key" -out "$PEMPRIVATEKEY" -passin stdin \
-        << EOFPASSPHRASEEOF
-$PASSPHRASE
-EOFPASSPHRASEEOF
+    until echo "$PASSPHRASE" | openssl rsa -in "$KEYDIR/db.key" -out "$PEMPRIVATEKEY" -passin stdin
+    do
+        echo "Bad passphrase on ssl key"
+        sleep 1
+    done
 
     # Sign the EFI image into final output location.
     echo "Signing GRUB image..."
@@ -298,10 +376,16 @@ EOFPASSPHRASEEOF
     efibootmgr | grep -i "$BOOTLOADER_ID" | cut -c 5-8 | xargs -n 1 -r \
         efibootmgr --quiet --delete-bootnum --bootnum
     set -e
-    # Add new bootloader entry:
+    # Add new bootloader entry. nvme looks like /dev/nvme0n1p1
     DEVICE="$(df -T /boot/efi | sed -n 2p | awk '{ print $1}')"
-    DISK="$(echo "$DEVICE" | sed 's|[0-9]||g')"
-    PARTNUM="$(echo "$DEVICE" | sed 's|[^0-9]||g')"
+    if [[ $DEVICE =~ n[0-9]+p[0-9] ]]
+    then
+        DISK="$(echo "$DEVICE" | sed 's?p.*??g')"
+        PARTNUM="$(echo "$DEVICE" | sed 's?.*p??g')"
+    else
+        DISK="$(echo "$DEVICE" | sed 's|[0-9]||g')"
+        PARTNUM="$(echo "$DEVICE" | sed 's|[^0-9]||g')"
+    fi
     efibootmgr --quiet --create --disk "$DISK" --part "$PARTNUM" \
         --write-signature --label "$BOOTLOADER_ID" \
         --loader "\\EFI\\$BOOTLOADER_ID\\$EFI_FILENAME"
@@ -325,9 +409,12 @@ EOFPASSPHRASEEOF
         # (see comments in update-grub).
         echo "Signing kernel or initrd at $SECURE_BOOT_KERNEL_PATH"
         if [ -n "$SECURE_BOOT_SIGNED_SOURCE" ] ; then
-            # Check source signature
-            gpg --verify "${SECURE_BOOT_SIGNED_SOURCE}.sig" \
-                "$SECURE_BOOT_SIGNED_SOURCE"
+            if [ -f "${SECURE_BOOT_SIGNED_SOURCE}.sig" ]
+            then
+                # Check source signature
+                gpg --verify "${SECURE_BOOT_SIGNED_SOURCE}.sig" \
+                    "$SECURE_BOOT_SIGNED_SOURCE"
+            fi
 
             # Copy and sign it to destination with sbsign:
             runsbsign --key "$PEMPRIVATEKEY" --cert "$KEYDIR/db.crt" \
@@ -337,7 +424,7 @@ EOFPASSPHRASEEOF
         # Now sign the final output with gpg:
         if [ -e "$SECURE_BOOT_KERNEL_PATH" ] ; then
             gpg --yes --batch -u "$KEYID" --detach-sign \
-                --passphrase-file "$PASSPHRASEFILE" "$SECURE_BOOT_KERNEL_PATH"
+                "$SECURE_BOOT_KERNEL_PATH"
         fi
     elif [ "$SECURE_BOOT_KERNEL_ACTION" = postrm -a \
         "$SECURE_BOOT_KERNEL_HOOK" = 1 ]
@@ -372,8 +459,7 @@ EOFPASSPHRASEEOF
                 ;;
             esac
             # Sign final output with gpg:
-            gpg --yes --batch -u "$KEYID" --detach-sign \
-                --passphrase-file "$PASSPHRASEFILE" "$file"
+            gpg --yes --batch -u "$KEYID" --detach-sign "$file"
         done
     fi
 
@@ -392,6 +478,11 @@ EOFPASSPHRASEEOF
     rm -rf /boot/grub/grubenv
     rm -rf /boot/grub/unicode.pf2
     : > /boot/grub/grub.cfg
+
+    # Now update cache
+    mkdir -p /etc/ubuntu-secure-boot/cache
+    cp "$GPGPUBLICKEY" /etc/ubuntu-secure-boot/cache/grub.pubkey
+    cp /etc/ubuntu-secure-boot/grub.cfg /etc/ubuntu-secure-boot/cache/grub.cfg
 
     exit 0
 fi

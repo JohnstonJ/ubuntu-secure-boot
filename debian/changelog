@@ -1,3 +1,40 @@
+ubuntu-secure-boot (0.1.7ubuntu1) unstable; urgency=medium
+
+  [ Kyle Larose ]
+  * fix: swap -e and +e in helper function
+
+ -- don <don@cube>  Mon, 03 Feb 2020 17:02:41 -0500
+
+ubuntu-secure-boot (0.1.7) unstable; urgency=low
+
+  * fix: remove .sig from SECURE_BOOT_KERNEL_PATH if present
+
+ -- Don Bowman <db@donbowman.ca>  Mon, 13 Jan 2020 11:29:00 -0500
+
+ubuntu-secure-boot (0.1.6) unstable; urgency=low
+
+  * feat: check all .sig files for validity, resign if not
+
+ -- Don Bowman <db@donbowman.ca>  Mon, 13 Jan 2020 10:41:00 -0500
+
+ubuntu-secure-boot (0.1.5) unstable; urgency=low
+
+  * feat: invalidate cache if /boot/* changes or --sign-all
+
+ -- Don Bowman <db@donbowman.ca>  Thu, 9 Jan 2020 14:41:00 -0500
+
+ubuntu-secure-boot (0.1.4) unstable; urgency=low
+
+  * feat: cache to avoid rebuild of all grub modules
+
+ -- Don Bowman <db@donbowman.ca>  Mon, 23 Dec 2019 11:57:39 -0500
+
+ubuntu-secure-boot (0.1.3) unstable; urgency=low
+
+  * Add support for gpg2.x (Ubuntu 18.04)
+
+ -- Don Bowman <db@donbowman.ca>  Wed, 21 Feb 2018 17:52:07 -0500
+
 ubuntu-secure-boot (0.1.2) unstable; urgency=low
 
   * Work around upstream no_insmod_on_sb.patch that prevents us from loading

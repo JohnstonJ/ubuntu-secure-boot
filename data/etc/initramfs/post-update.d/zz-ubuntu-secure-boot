@@ -2,9 +2,16 @@
 
 set -e
 
+log() {
+    logger -t zz-ubuntu-secure-boot "$*"
+    >&2 echo "$*"
+}
+
+log "update initramfs hook: $*"
+
 if [ -z "$2" ] ; then
     # Required parameter (path to initramfs file) is missing.
-    echo "Required parameter to zz-ubuntu-secure-boot initramfs " \
+    log "Required parameter to zz-ubuntu-secure-boot initramfs " \
          "hook was missing."
     exit 1
 fi
